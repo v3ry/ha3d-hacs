@@ -124,6 +124,12 @@ def _demo_entry(s: dict) -> dict:
             "attrs": {"friendly_name": s.get("label", eid), "demo": True}}
 
 
+
+def _app_data(request):
+    """Accès aux données d'intégration depuis une vue (standard hass.data)."""
+    return request.app["hass"].data[DOMAIN]
+
+
 class LayoutView(HomeAssistantView):
     """GET /api/ha3d/layout — layout courant."""
 
@@ -132,7 +138,7 @@ class LayoutView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request):
-        store = request.app[DOMAIN]["store"]
+        store = _app_data(request)["store"]
         return self.json(store.layout)
 
 
@@ -144,7 +150,7 @@ class SaveLayoutView(HomeAssistantView):
     requires_auth = True
 
     async def post(self, request):
-        store = request.app[DOMAIN]["store"]
+        store = _app_data(request)["store"]
         try:
             data = await request.json()
         except json.JSONDecodeError:
@@ -163,7 +169,7 @@ class StatusView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request):
-        app = request.app[DOMAIN]
+        app = _app_data(request)
         payload = _status_payload(request.app["hass"], app["store"].layout, app["store"].is_demo)
         return self.json(payload)
 
@@ -176,7 +182,7 @@ class ModelsView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request):
-        models_dir = request.app[DOMAIN]["models_dir"]
+        models_dir = _app_data(request)["models_dir"]
         models = sorted(p.stem for p in models_dir.glob("*.glb"))
         return self.json({"models": models})
 
@@ -265,7 +271,7 @@ class EventsView(HomeAssistantView):
 
     async def get(self, request):
         hass: HomeAssistant = request.app["hass"]
-        app = request.app[DOMAIN]
+        app = _app_data(request)
         store = app["store"]
 
         response = web.StreamResponse(
@@ -344,14 +350,12 @@ class EventsView(HomeAssistantView):
 def register_views(hass: HomeAssistant, models_dir: Path, store) -> None:
     """Enregistre toutes les vues API sur le webserver HA.
 
-    Le store et models_dir sont attachés à l'app aiohttp (request.app[DOMAIN])
-    — c'est là que les vues les lisent.
+    Les vues lisent le store via request.app[KEY_HASS].data[DOMAIN]
+    (mécanisme standard hass.data, stable quelle que soit la version HA).
     """
-    app = hass.http.app
-    app[DOMAIN] = {
-        "store": store,
-        "models_dir": models_dir,
-    }
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN]["store"] = store
+    hass.data[DOMAIN]["models_dir"] = models_dir
     hass.http.register_view(LayoutView())
     hass.http.register_view(SaveLayoutView())
     hass.http.register_view(StatusView())

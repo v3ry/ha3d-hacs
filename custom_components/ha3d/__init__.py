@@ -57,7 +57,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ])
 
     # Panel custom dans la sidebar : webcomponent ES6 → custom element <ha3d-panel>
-    await hass.components.panel_custom.async_register_panel(
+    from homeassistant.components.panel_custom import async_register_panel
+    await async_register_panel(
         hass,
         webcomponent_name="ha3d-panel",
         frontend_url_path="ha3d-panel",
