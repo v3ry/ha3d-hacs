@@ -8,17 +8,30 @@ class Ha3dPanel extends HTMLElement {
     this.attachShadow({ mode: 'open' });
     this._token = null;
     this._iframe = null;
+    this._rendered = false;
+    // Handshake : l'iframe demande le token quand elle est prête
+    window.addEventListener('message', (evt) => {
+      if (evt.data && evt.data.type === 'ha3d-request-token') {
+        this._sendToken();
+      }
+    });
   }
 
   set hass(hass) {
     // Appelé par le frontend HA avec l'état courant (contient le token d'accès)
     this._hass = hass;
-    this._token = hass && hass.auth ? hass.auth.accessToken : null;
+    const tok = hass && hass.auth ? hass.auth.accessToken : null;
+    if (tok) this._token = tok;
     this._sendToken();
   }
 
+  get hass() {
+    return this._hass;
+  }
+
   _sendToken() {
-    if (this._token && this._iframe && this._iframe.contentWindow) {
+    if (!this._token) return;
+    if (this._iframe && this._iframe.contentWindow) {
       this._iframe.contentWindow.postMessage(
         { type: 'ha3d-auth', token: this._token },
         '*'

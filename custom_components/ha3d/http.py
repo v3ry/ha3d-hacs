@@ -284,7 +284,6 @@ class EventsView(HomeAssistantView):
             },
         )
         await response.prepare(request)
-        request.protocol.set_compression(False)
 
         # Snapshot initial
         snap = json.dumps({"type": "snapshot", **_status_payload(hass, store.layout, store.is_demo)}, ensure_ascii=False)

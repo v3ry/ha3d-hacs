@@ -40,6 +40,19 @@ window.addEventListener('message', (evt) => {
   }
 });
 
+// Handshake actif : demande le token au panel parent (qui répond par
+// postMessage 'ha3d-auth'). Relancé tant que le token n'est pas reçu
+// (limité à 30 s pour éviter le spam en cas de problème).
+let haTokenAttempts = 0;
+function requestHaToken() {
+  if (!haToken && haTokenAttempts < 30) {
+    haTokenAttempts++;
+    window.parent.postMessage({ type: 'ha3d-request-token' }, '*');
+    setTimeout(requestHaToken, 1000);
+  }
+}
+requestHaToken();
+
 // Wrapper fetch : injecte le Bearer token HA (les vues /api/ha3d/* exigent
 // un token — l'auth par cookie n'existe plus dans HA moderne).
 async function apiFetch(url, opts = {}) {
