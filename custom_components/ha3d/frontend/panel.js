@@ -1,9 +1,29 @@
 // Ha3D panel — custom element pour la sidebar Home Assistant.
-// Charge le visualiseur 3D (frontend standalone) dans un iframe plein écran.
+// Charge le visualiseur 3D (frontend standalone) dans un iframe plein écran
+// et transmet le token d'accès HA à l'iframe (l'API /api/ha3d/* exige un
+// Bearer token — pas de cookie).
 class Ha3dPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
+    this._token = null;
+    this._iframe = null;
+  }
+
+  set hass(hass) {
+    // Appelé par le frontend HA avec l'état courant (contient le token d'accès)
+    this._hass = hass;
+    this._token = hass && hass.auth ? hass.auth.accessToken : null;
+    this._sendToken();
+  }
+
+  _sendToken() {
+    if (this._token && this._iframe && this._iframe.contentWindow) {
+      this._iframe.contentWindow.postMessage(
+        { type: 'ha3d-auth', token: this._token },
+        '*'
+      );
+    }
   }
 
   connectedCallback() {
@@ -12,7 +32,11 @@ class Ha3dPanel extends HTMLElement {
     const iframe = document.createElement('iframe');
     iframe.src = '/ha3d/index.html';
     iframe.style.cssText = 'width:100%;height:100%;border:none;display:block;';
+    this._iframe = iframe;
     this.shadowRoot.appendChild(iframe);
+    // Transmet le token dès que l'iframe est prête (et à chaque changement)
+    iframe.addEventListener('load', () => this._sendToken());
+    this._sendToken();
   }
 }
 

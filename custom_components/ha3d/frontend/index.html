@@ -1804,6 +1804,22 @@ function bindLangSelector() {
 }
 
 // ============ CONFIG ============
+// Auth HA (mode intégration HACS) : le token est reçu du panel parent
+// via postMessage, puis injecté dans tous les fetch (Bearer).
+let haToken = null;
+window.addEventListener('message', (evt) => {
+  if (evt.data && evt.data.type === 'ha3d-auth' && evt.data.token) {
+    haToken = evt.data.token;
+  }
+});
+
+// Wrapper fetch : injecte le Bearer token HA (les vues /api/ha3d/* exigent
+// un token — l'auth par cookie n'existe plus dans HA moderne).
+async function apiFetch(url, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (haToken) headers['Authorization'] = 'Bearer ' + haToken;
+  return fetch(url, { ...opts, headers, credentials: 'same-origin' });
+}
 const COLORS = {
   temp:  { hot:'#ff5d5d', warm:'#ffa657', mid:'#58a6ff', cool:'#79c0ff' },
   hum:   '#79c0ff',
@@ -1877,12 +1893,12 @@ async function init() {
   addGround();
 
   const [l, s] = await Promise.all([
-    fetch('/api/ha3d/layout').then(r => r.json()),
-    fetch('/api/ha3d/status').then(r => r.json())
+    apiFetch('/api/ha3d/layout').then(r => r.json()),
+    apiFetch('/api/ha3d/status').then(r => r.json())
   ]);
   layout = l;
   // Liste des modèles 3D disponibles (dossier models/ du serveur)
-  fetch('/api/ha3d/models').then(r => r.json()).then(d => { availableModels = d.models || []; }).catch(() => { availableModels = []; });
+  apiFetch('/api/ha3d/models').then(r => r.json()).then(d => { availableModels = d.models || []; }).catch(() => { availableModels = []; });
   // Caméra par défaut : le layout (avec default_camera) n'est chargé qu'ici
   if (layout.default_camera) {
     defaultCamera = layout.default_camera;
@@ -3062,7 +3078,7 @@ async function loadChart(entityId) {
   box.innerHTML = '<canvas width="260" height="110"></canvas>';
   document.getElementById('detail').appendChild(box);
   try {
-    const r = await fetch('/api/ha3d/history?entity=' + encodeURIComponent(entityId) + '&hours=24');
+    const r = await apiFetch('/api/ha3d/history?entity=' + encodeURIComponent(entityId) + '&hours=24');
     const data = await r.json();
     drawChart(box.querySelector('canvas'), data.points || []);
   } catch (e) {
@@ -3111,7 +3127,7 @@ function isToggleable(entity) {
 async function toggleSensor(s) {
   const { cfg } = s;
   try {
-    const r = await fetch('/api/ha3d/toggle', {
+    const r = await apiFetch('/api/ha3d/toggle', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ entity_id: cfg.entity }),
@@ -4308,7 +4324,7 @@ async function saveLayoutToServer() {
     // Caméra par défaut + vues enregistrées
     newLayout.default_camera = defaultCamera;
     newLayout.camera_views = cameraViews;
-    const resp = await fetch('/api/ha3d/save-layout', {
+    const resp = await apiFetch('/api/ha3d/save-layout', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newLayout),
@@ -4372,7 +4388,7 @@ function importLayoutFile(file) {
       if (!data || typeof data !== 'object' || !Array.isArray(data.sensors)) {
         throw new Error('fichier invalide : "sensors" (liste) manquant');
       }
-      const resp = await fetch('/api/ha3d/save-layout', {
+      const resp = await apiFetch('/api/ha3d/save-layout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
@@ -4689,7 +4705,7 @@ function applyStatusData(data) {
 
 async function refreshStatus() {
   try {
-    const r = await fetch('/api/ha3d/status');
+    const r = await apiFetch('/api/ha3d/status');
     const data = await r.json();
     applyStatusData(data);
   } catch (e) {
@@ -4712,46 +4728,64 @@ function updateSSEIndicator() {
 
 function connectSSE() {
   window._sseFailed = false;
-  if (!window.EventSource) { window._sseFailed = true; updateSSEIndicator(); return; }
-  try {
-    sseSource = new EventSource('/api/ha3d/events');
-    sseSource.onopen = () => {
+  window._sseStopped = false;
+  // SSE via fetch streaming : EventSource ne permet pas d'envoyer un header
+  // Authorization (exigé par l'API HA moderne).
+  let reader = null;
+  let buffer = '';
+  const connect = async () => {
+    if (window._sseStopped) return;
+    try {
+      const resp = await apiFetch('/api/ha3d/events');
+      if (!resp.ok || !resp.body) throw new Error('SSE HTTP ' + resp.status);
       sseConnected = true;
       updateSSEIndicator();
       document.getElementById('statusbar').textContent = t('sse.reconnect');
-    };
-    sseSource.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data);
-        if (msg.type === 'snapshot') {
-          sseConnected = true;
-          applyStatusData(msg);
-        } else if (msg.type === 'update') {
-          // Mise à jour d'une seule entité
-          const s = sensors.find(x => x.cfg.entity === msg.entity);
-          if (s) {
-            s.st = { state: msg.state, unit: msg.unit, attrs: msg.attrs || {} };
-            const entry = sensorMeshes.find(m => m.sensor === s);
-            if (entry) drawSensorLabel(entry);
-          }
-          refreshSensorColors();  // icônes + lumières 3D en direct (pas d'attente du polling)
-          // Porte garage si concernée (entité éditable dans le layout)
-          if (garageDoorEntity() && msg.entity === garageDoorEntity()) updateGarageDoor(msg.state);
-          // Porte animée (état on = ouverte)
-          if (msg.entity && doorAnims.some(a => a.entity === msg.entity)) doorStates[msg.entity] = msg.state;
-          updateAlerts(sensors);
+      reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += dec.decode(value, { stream: true });
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+          const chunk = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          const line = chunk.split('\n').find(l => l.startsWith('data: '));
+          if (!line) continue;
+          try {
+            const msg = JSON.parse(line.slice(6));
+            if (msg.type === 'snapshot') {
+              sseConnected = true;
+              applyStatusData(msg);
+            } else if (msg.type === 'update') {
+              // Mise à jour d'une seule entité
+              const s = sensors.find(x => x.cfg.entity === msg.entity);
+              if (s) {
+                s.st = { state: msg.state, unit: msg.unit, attrs: msg.attrs || {} };
+                const entry = sensorMeshes.find(m => m.sensor === s);
+                if (entry) drawSensorLabel(entry);
+              }
+              refreshSensorColors();  // icônes + lumières 3D en direct (pas d'attente du polling)
+              // Porte garage si concernée (entité éditable dans le layout)
+              if (garageDoorEntity() && msg.entity === garageDoorEntity()) updateGarageDoor(msg.state);
+              // Porte animée (état on = ouverte)
+              if (msg.entity && doorAnims.some(a => a.entity === msg.entity)) doorStates[msg.entity] = msg.state;
+              updateAlerts(sensors);
+            }
+          } catch (e) { /* ignore */ }
         }
-      } catch (e) { /* ignore */ }
-    };
-    sseSource.onerror = () => {
+      }
       sseConnected = false;
       updateSSEIndicator();
-      // EventSource se reconnecte automatiquement ; le polling 60 s reprend (fallback)
-    };
-  } catch (e) {
-    window._sseFailed = true;
-    updateSSEIndicator();
-  }
+    } catch (e) {
+      sseConnected = false;
+      updateSSEIndicator();
+      // Reconnexion automatique (le polling 60 s reprend en attendant)
+      setTimeout(connect, 5000);
+    }
+  };
+  connect();
 }
 
 // ============ LOOP ============

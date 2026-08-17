@@ -29,6 +29,26 @@ CDN_REPLACEMENTS = [
     ("https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js", "vendor/GLTFLoader.js"),
 ]
 
+# Bloc auth HA injecté après le marqueur CONFIG (token via postMessage du panel)
+AUTH_BLOCK = """// ============ CONFIG ============
+// Auth HA (mode intégration HACS) : le token est reçu du panel parent
+// via postMessage, puis injecté dans tous les fetch (Bearer).
+let haToken = null;
+window.addEventListener('message', (evt) => {
+  if (evt.data && evt.data.type === 'ha3d-auth' && evt.data.token) {
+    haToken = evt.data.token;
+  }
+});
+
+// Wrapper fetch : injecte le Bearer token HA (les vues /api/ha3d/* exigent
+// un token — l'auth par cookie n'existe plus dans HA moderne).
+async function apiFetch(url, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (haToken) headers['Authorization'] = 'Bearer ' + haToken;
+  return fetch(url, { ...opts, headers, credentials: 'same-origin' });
+}
+"""
+
 # Vérifications post-sync : aucun chemin standalone ne doit subsister
 GUARDS = [
     "fetch('/api/layout'",
@@ -67,6 +87,45 @@ def sync(src: Path, dst: Path, check: bool = False) -> list[str]:
             html = html.replace(cdn, local)
         else:
             missing.append(f"CDN absent (déjà local ?): {cdn[:50]}")
+
+    # Injection du bloc auth HA (remplace le marqueur CONFIG original)
+    config_marker = "// ============ CONFIG ============"
+    if config_marker in html:
+        html = html.replace(config_marker, AUTH_BLOCK.strip(), 1)
+    else:
+        missing.append("marqueur CONFIG introuvable pour l'auth")
+    # Tous les fetch /api/ha3d/* passent par apiFetch (Bearer token)
+    html = html.replace("fetch('/api/ha3d/", "apiFetch('/api/ha3d/")
+
+    # SSE : remplace la fonction connectSSE (EventSource) par la version
+    # streaming avec Bearer token (EventSource ne gère pas les headers).
+    sse_fn = (Path(__file__).resolve().parent / "sse_streaming.js").read_text(encoding="utf-8").strip()
+    sse_start = html.find("function connectSSE()")
+    if sse_start >= 0:
+        depth = 0
+        i = sse_start
+        in_str = None
+        while i < len(html):
+            c = html[i]
+            if in_str:
+                if c == "\\":
+                    i += 2
+                    continue
+                if c == in_str:
+                    in_str = None
+            else:
+                if c in "'\"`":
+                    in_str = c
+                elif c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            i += 1
+        html = html[:sse_start] + sse_fn + html[i + 1:]
+    else:
+        missing.append("connectSSE introuvable")
 
     target = dst / "index.html"
     if check:
