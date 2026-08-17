@@ -1,44 +1,87 @@
 // Ha3D panel — custom element pour la sidebar Home Assistant.
-// Charge le visualiseur 3D (frontend standalone) dans un iframe plein écran
-// et transmet le token d'accès HA à l'iframe (l'API /api/ha3d/* exige un
-// Bearer token — pas de cookie).
+// Le panel sert de PROXY : il fait les appels API via hass.fetchWithAuth
+// (auth native HA, aucun token à gérer) et relaie les résultats à l'iframe
+// via postMessage. Le temps réel passe par hass.connection.subscribeEvents.
 class Ha3dPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
-    this._token = null;
+    this._hass = null;
     this._iframe = null;
     this._rendered = false;
-    // Handshake : l'iframe demande le token quand elle est prête
-    window.addEventListener('message', (evt) => {
-      if (evt.data && evt.data.type === 'ha3d-request-token') {
-        this._sendToken();
+    this._unsub = null;
+
+    window.addEventListener('message', async (evt) => {
+      const d = evt.data;
+      if (!d || d.type !== 'ha3d-fetch') return;
+      const { id, url, method, body } = d;
+      try {
+        if (!this._hass) throw new Error('hass not ready');
+        const init = { method: method || 'GET' };
+        if (body !== undefined && body !== null) {
+          init.headers = { 'Content-Type': 'application/json' };
+          init.body = JSON.stringify(body);
+        }
+        const resp = await this._hass.fetchWithAuth(url, init);
+        let data = null;
+        try { data = await resp.json(); } catch (e) { /* non-JSON */ }
+        if (evt.source && evt.source.postMessage) {
+          evt.source.postMessage(
+            { type: 'ha3d-fetch-result', id, ok: resp.ok, status: resp.status, data },
+            '*'
+          );
+        }
+      } catch (e) {
+        if (evt.source && evt.source.postMessage) {
+          evt.source.postMessage(
+            { type: 'ha3d-fetch-result', id, ok: false, status: 0, data: null, error: String(e) },
+            '*'
+          );
+        }
       }
     });
   }
 
   set hass(hass) {
-    // Appelé par le frontend HA avec l'état courant (contient le token d'accès)
     this._hass = hass;
-    const tok = hass && hass.auth ? hass.auth.accessToken : null;
-    if (tok) this._token = tok;
-    this._sendToken();
+    this._setupEventBridge();
   }
 
   get hass() {
     return this._hass;
   }
 
-  _sendToken() {
-    // Relit le token à chaque envoi (il peut arriver après le premier set hass)
-    const tok = this._hass && this._hass.auth ? this._hass.auth.accessToken : null;
-    if (tok) this._token = tok;
-    if (!this._token) return;
-    if (this._iframe && this._iframe.contentWindow) {
-      this._iframe.contentWindow.postMessage(
-        { type: 'ha3d-auth', token: this._token },
-        '*'
-      );
+  // Relaie les state_changed HA à l'iframe (remplace le SSE, qui exige
+  // un Bearer token sur EventSource — impossible).
+  _setupEventBridge() {
+    if (!this._hass || !this._hass.connection || this._unsub) return;
+    try {
+      this._unsub = this._hass.connection.subscribeEvents((evt) => {
+        if (!this._iframe || !this._iframe.contentWindow) return;
+        if (evt.event_type !== 'state_changed') return;
+        const eid = evt.data && evt.data.entity_id;
+        const ns = evt.data && evt.data.new_state;
+        if (!eid) return;
+        const attrs = ns ? ns.attributes : {};
+        const msg = {
+          type: 'ha3d-state-changed',
+          entity: eid,
+          state: ns ? ns.state : null,
+          unit: attrs.unit_of_measurement || '',
+          attrs: {
+            friendly_name: attrs.friendly_name,
+            temperature: attrs.temperature,
+            current_temperature: attrs.current_temperature,
+            humidity: attrs.humidity,
+            battery_level: attrs.battery_level,
+            hvac_action: attrs.hvac_action,
+            hvac_mode: attrs.hvac_mode,
+          },
+        };
+        this._iframe.contentWindow.postMessage(msg, '*');
+      }, 'state_changed');
+    } catch (e) {
+      // subscribeEvents indisponible → le polling de l'iframe prend le relais
     }
   }
 
@@ -50,9 +93,7 @@ class Ha3dPanel extends HTMLElement {
     iframe.style.cssText = 'width:100%;height:100%;border:none;display:block;';
     this._iframe = iframe;
     this.shadowRoot.appendChild(iframe);
-    // Transmet le token dès que l'iframe est prête (et à chaque changement)
-    iframe.addEventListener('load', () => this._sendToken());
-    this._sendToken();
+    this._setupEventBridge();
   }
 }
 

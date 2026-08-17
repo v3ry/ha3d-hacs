@@ -2,7 +2,8 @@
 """Synchronise le frontend du repo standalone (v3ry/ha3d) vers l'intégration HACS.
 
 Usage : python3 tools/sync_frontend.py <chemin-standalone> [--check]
-Adapte les chemins API (/api/* → /api/ha3d/*) et modèles (/models/ → /ha3d/models/).
+Adapte : chemins API (/api/* → /api/ha3d/*), modèles (/models/ → /ha3d/models/),
+CDN → vendor local, bloc auth (proxy postMessage) et SSE (événements relayés).
 """
 import argparse
 import re
@@ -29,51 +30,6 @@ CDN_REPLACEMENTS = [
     ("https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js", "vendor/GLTFLoader.js"),
 ]
 
-# Bloc auth HA injecté après le marqueur CONFIG (token via postMessage du panel)
-AUTH_BLOCK = """// ============ CONFIG ============
-// Auth HA (mode intégration HACS) : le token est reçu du panel parent
-// via postMessage, puis injecté dans tous les fetch (Bearer).
-let haToken = null;
-const haTokenWaiters = [];
-window.addEventListener('message', (evt) => {
-  if (evt.data && evt.data.type === 'ha3d-auth' && evt.data.token) {
-    haToken = evt.data.token;
-    // Réveille tous les fetch en attente
-    const ws = haTokenWaiters.splice(0);
-    ws.forEach(w => w(true));
-  }
-});
-
-// Attend que le token arrive (résout false si timeout). Envoie au passage
-// une demande au panel parent (il répond par postMessage 'ha3d-auth').
-function waitForHaToken(timeout = 5000) {
-  if (haToken) return Promise.resolve(true);
-  try { window.parent.postMessage({ type: 'ha3d-request-token' }, '*'); } catch (e) {}
-  return new Promise(resolve => {
-    let done = false;
-    const t = setTimeout(() => { if (!done) { done = true; resolve(false); } }, timeout);
-    haTokenWaiters.push(ok => { if (!done) { done = true; clearTimeout(t); resolve(ok); } });
-  });
-}
-
-// Wrapper fetch : injecte le Bearer token HA. Attend le token au premier
-// appel (course au démarrage) et réessaie une fois sur 401.
-async function apiFetch(url, opts = {}) {
-  const headers = { ...(opts.headers || {}) };
-  if (haToken) headers['Authorization'] = 'Bearer ' + haToken;
-  let resp = await fetch(url, { ...opts, headers, credentials: 'same-origin' });
-  if (resp.status === 401 && !haToken) {
-    // Le token n'était pas encore là : on l'attend puis on réessaie une fois
-    const got = await waitForHaToken();
-    if (got) {
-      headers['Authorization'] = 'Bearer ' + haToken;
-      resp = await fetch(url, { ...opts, headers, credentials: 'same-origin' });
-    }
-  }
-  return resp;
-}
-"""
-
 # Vérifications post-sync : aucun chemin standalone ne doit subsister
 GUARDS = [
     "fetch('/api/layout'",
@@ -85,6 +41,35 @@ GUARDS = [
     "new EventSource('/api/events')",
     "gltfLoader.load('/models/'",
 ]
+
+
+def _extract_function(html: str, name: str) -> tuple[int, int]:
+    """Retourne (start, end) de la fonction `name` dans html."""
+    start = html.find(f"function {name}()")
+    if start < 0:
+        return -1, -1
+    depth = 0
+    i = start
+    in_str = None
+    while i < len(html):
+        c = html[i]
+        if in_str:
+            if c == "\\":
+                i += 2
+                continue
+            if c == in_str:
+                in_str = None
+        else:
+            if c in "'\"`":
+                in_str = c
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return start, i + 1
+        i += 1
+    return start, -1
 
 
 def sync(src: Path, dst: Path, check: bool = False) -> list[str]:
@@ -110,45 +95,26 @@ def sync(src: Path, dst: Path, check: bool = False) -> list[str]:
     for cdn, local in CDN_REPLACEMENTS:
         if cdn in html:
             html = html.replace(cdn, local)
-        else:
-            missing.append(f"CDN absent (déjà local ?): {cdn[:50]}")
 
-    # Injection du bloc auth HA (remplace le marqueur CONFIG original)
+    tools_dir = Path(__file__).resolve().parent
+
+    # Injection du bloc auth proxy (remplace le marqueur CONFIG original)
+    auth_block = (tools_dir / "auth_proxy.js").read_text(encoding="utf-8").strip()
     config_marker = "// ============ CONFIG ============"
     if config_marker in html:
-        html = html.replace(config_marker, AUTH_BLOCK.strip(), 1)
+        html = html.replace(config_marker, auth_block, 1)
     else:
         missing.append("marqueur CONFIG introuvable pour l'auth")
-    # Tous les fetch /api/ha3d/* passent par apiFetch (Bearer token)
-    html = html.replace("fetch('/api/ha3d/", "apiFetch('/api/ha3d/")
 
-    # SSE : remplace la fonction connectSSE (EventSource) par la version
-    # streaming avec Bearer token (EventSource ne gère pas les headers).
-    sse_fn = (Path(__file__).resolve().parent / "sse_streaming.js").read_text(encoding="utf-8").strip()
-    sse_start = html.find("function connectSSE()")
-    if sse_start >= 0:
-        depth = 0
-        i = sse_start
-        in_str = None
-        while i < len(html):
-            c = html[i]
-            if in_str:
-                if c == "\\":
-                    i += 2
-                    continue
-                if c == in_str:
-                    in_str = None
-            else:
-                if c in "'\"`":
-                    in_str = c
-                elif c == "{":
-                    depth += 1
-                elif c == "}":
-                    depth -= 1
-                    if depth == 0:
-                        break
-            i += 1
-        html = html[:sse_start] + sse_fn + html[i + 1:]
+    # Tous les fetch /api/ha3d/* passent par apiFetch (proxy panel)
+    html = html.replace("fetch('/api/ha3d/", "apiFetch('/api/ha3d/")
+    html = html.replace("fetch(`/api/ha3d/", "apiFetch(`/api/ha3d/")
+
+    # SSE : remplace connectSSE par la version événements relayés
+    sse_fn = (tools_dir / "sse_relay.js").read_text(encoding="utf-8").strip()
+    sse_start, sse_end = _extract_function(html, "connectSSE")
+    if sse_start >= 0 and sse_end > 0:
+        html = html[:sse_start] + sse_fn + html[sse_end:]
     else:
         missing.append("connectSSE introuvable")
 

@@ -1804,46 +1804,81 @@ function bindLangSelector() {
 }
 
 // ============ CONFIG ============
-// Auth HA (mode intégration HACS) : le token est reçu du panel parent
-// via postMessage, puis injecté dans tous les fetch (Bearer).
-let haToken = null;
-const haTokenWaiters = [];
+// Mode intégration HACS : le PANEL parent sert de proxy API. Les fetch
+// sont relayés par postMessage (le panel utilise hass.fetchWithAuth,
+// auth native HA — aucun token à gérer côté iframe). Le temps réel passe
+// par les événements state_changed relayés (remplace le SSE).
+const _fetchWaiters = {};
+let _fetchReqId = 0;
+
 window.addEventListener('message', (evt) => {
-  if (evt.data && evt.data.type === 'ha3d-auth' && evt.data.token) {
-    haToken = evt.data.token;
-    // Réveille tous les fetch en attente
-    const ws = haTokenWaiters.splice(0);
-    ws.forEach(w => w(true));
+  const d = evt.data;
+  if (!d) return;
+  if (d.type === 'ha3d-fetch-result') {
+    const w = _fetchWaiters[d.id];
+    if (w) {
+      delete _fetchWaiters[d.id];
+      w(d);
+    }
+  } else if (d.type === 'ha3d-state-changed') {
+    // Événement temps réel relayé par le panel (remplace le SSE)
+    if (typeof handleRelayedState === 'function') handleRelayedState(d);
   }
 });
 
-// Attend que le token arrive (résout false si timeout). Envoie au passage
-// une demande au panel parent (il répond par postMessage 'ha3d-auth').
-function waitForHaToken(timeout = 5000) {
-  if (haToken) return Promise.resolve(true);
-  try { window.parent.postMessage({ type: 'ha3d-request-token' }, '*'); } catch (e) {}
+// Wrapper fetch : relaie la requête au panel parent via postMessage.
+async function apiFetch(url, opts = {}) {
   return new Promise(resolve => {
-    let done = false;
-    const t = setTimeout(() => { if (!done) { done = true; resolve(false); } }, timeout);
-    haTokenWaiters.push(ok => { if (!done) { done = true; clearTimeout(t); resolve(ok); } });
+    const id = ++_fetchReqId;
+    _fetchWaiters[id] = (r) => {
+      resolve({
+        ok: r.ok,
+        status: r.status || 0,
+        json: () => Promise.resolve(r.data),
+        text: () => Promise.resolve(JSON.stringify(r.data)),
+      });
+    };
+    let body = null;
+    if (opts.body) {
+      try { body = JSON.parse(opts.body); } catch (e) { body = opts.body; }
+    }
+    try {
+      window.parent.postMessage(
+        { type: 'ha3d-fetch', id, url, method: opts.method || 'GET', body },
+        '*'
+      );
+    } catch (e) {
+      delete _fetchWaiters[id];
+      resolve({ ok: false, status: 0, json: () => Promise.resolve({}), text: () => Promise.resolve('') });
+    }
   });
 }
 
-// Wrapper fetch : injecte le Bearer token HA. Attend le token au premier
-// appel (course au démarrage) et réessaie une fois sur 401.
-async function apiFetch(url, opts = {}) {
-  const headers = { ...(opts.headers || {}) };
-  if (haToken) headers['Authorization'] = 'Bearer ' + haToken;
-  let resp = await fetch(url, { ...opts, headers, credentials: 'same-origin' });
-  if (resp.status === 401 && !haToken) {
-    // Le token n'était pas encore là : on l'attend puis on réessaie une fois
-    const got = await waitForHaToken();
-    if (got) {
-      headers['Authorization'] = 'Bearer ' + haToken;
-      resp = await fetch(url, { ...opts, headers, credentials: 'same-origin' });
+// Liste des entités suivies (pour filtrer les événements state_changed).
+let _trackedEntities = new Set();
+function setTrackedEntities(ids) {
+  _trackedEntities = new Set(ids);
+}
+
+// Handler des événements state_changed relayés par le panel (remplace SSE).
+function handleRelayedState(msg) {
+  if (!msg.entity || !_trackedEntities.has(msg.entity)) {
+    // Les portes animées ont leur propre entité, suivie séparément
+    if (!(msg.entity && doorAnims.some(a => a.entity === msg.entity)) &&
+        !(garageDoorEntity() && msg.entity === garageDoorEntity())) {
+      return;
     }
   }
-  return resp;
+  const s = sensors.find(x => x.cfg.entity === msg.entity);
+  if (s) {
+    s.st = { state: msg.state, unit: msg.unit, attrs: msg.attrs || {} };
+    const entry = sensorMeshes.find(m => m.sensor === s);
+    if (entry) drawSensorLabel(entry);
+  }
+  refreshSensorColors();
+  if (garageDoorEntity() && msg.entity === garageDoorEntity()) updateGarageDoor(msg.state);
+  if (doorAnims.some(a => a.entity === msg.entity)) doorStates[msg.entity] = msg.state;
+  updateAlerts(sensors);
 }
 const COLORS = {
   temp:  { hot:'#ff5d5d', warm:'#ffa657', mid:'#58a6ff', cool:'#79c0ff' },
@@ -3847,7 +3882,7 @@ async function searchEditEntities(q) {
   const box = document.getElementById('dbg-edit-results');
   if (!q || q.length < 2) { box.style.display = 'none'; return; }
   try {
-    const r = await fetch(`/api/ha3d/entities?q=${encodeURIComponent(q)}`);
+    const r = await apiFetch(`/api/ha3d/entities?q=${encodeURIComponent(q)}`);
     const data = await r.json();
     const hits = (data.entities || []).slice(0, 12);
     box.innerHTML = (hits.length ? hits.map(h =>
@@ -4506,7 +4541,7 @@ async function searchEntities(q) {
   const box = document.getElementById('debug-results');
   if (!q || q.length < 2) { box.style.display = 'none'; return; }
   try {
-    const r = await fetch(`/api/ha3d/entities?q=${encodeURIComponent(q)}`);
+    const r = await apiFetch(`/api/ha3d/entities?q=${encodeURIComponent(q)}`);
     const data = await r.json();
     const hits = (data.entities || []).filter(h => !layout.sensors.some(s => s.entity === h.entity_id));
     if (!hits.length) {
@@ -4752,65 +4787,19 @@ function updateSSEIndicator() {
 }
 
 function connectSSE() {
+  // Mode intégration HACS : le temps réel est relayé par le panel parent
+  // via postMessage (événements state_changed HA). Pas de SSE ni de fetch
+  // streaming — EventSource ne peut pas porter de Bearer token.
   window._sseFailed = false;
   window._sseStopped = false;
-  // SSE via fetch streaming : EventSource ne permet pas d'envoyer un header
-  // Authorization (exigé par l'API HA moderne).
-  let reader = null;
-  let buffer = '';
-  const connect = async () => {
-    if (window._sseStopped) return;
-    try {
-      const resp = await apiFetch('/api/ha3d/events');
-      if (!resp.ok || !resp.body) throw new Error('SSE HTTP ' + resp.status);
-      sseConnected = true;
-      updateSSEIndicator();
-      document.getElementById('statusbar').textContent = t('sse.reconnect');
-      reader = resp.body.getReader();
-      const dec = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += dec.decode(value, { stream: true });
-        let idx;
-        while ((idx = buffer.indexOf('\n\n')) >= 0) {
-          const chunk = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          const line = chunk.split('\n').find(l => l.startsWith('data: '));
-          if (!line) continue;
-          try {
-            const msg = JSON.parse(line.slice(6));
-            if (msg.type === 'snapshot') {
-              sseConnected = true;
-              applyStatusData(msg);
-            } else if (msg.type === 'update') {
-              // Mise à jour d'une seule entité
-              const s = sensors.find(x => x.cfg.entity === msg.entity);
-              if (s) {
-                s.st = { state: msg.state, unit: msg.unit, attrs: msg.attrs || {} };
-                const entry = sensorMeshes.find(m => m.sensor === s);
-                if (entry) drawSensorLabel(entry);
-              }
-              refreshSensorColors();  // icônes + lumières 3D en direct (pas d'attente du polling)
-              // Porte garage si concernée (entité éditable dans le layout)
-              if (garageDoorEntity() && msg.entity === garageDoorEntity()) updateGarageDoor(msg.state);
-              // Porte animée (état on = ouverte)
-              if (msg.entity && doorAnims.some(a => a.entity === msg.entity)) doorStates[msg.entity] = msg.state;
-              updateAlerts(sensors);
-            }
-          } catch (e) { /* ignore */ }
-        }
-      }
-      sseConnected = false;
-      updateSSEIndicator();
-    } catch (e) {
-      sseConnected = false;
-      updateSSEIndicator();
-      // Reconnexion automatique (le polling 60 s reprend en attendant)
-      setTimeout(connect, 5000);
-    }
-  };
-  connect();
+  sseConnected = true;  // le relay du panel est le canal temps réel
+  updateSSEIndicator();
+  document.getElementById('statusbar').textContent = t('sse.reconnect');
+  // Enregistre les entités suivies (le panel filtre côté iframe)
+  const ids = sensors.map(s => s.cfg.entity);
+  for (const s of sensors) { if (s.cfg.sum_with) ids.push(s.cfg.sum_with); }
+  for (const d of (layout.doors || [])) { if (d.entity) ids.push(d.entity); }
+  setTrackedEntities(ids);
 }
 
 // ============ LOOP ============
