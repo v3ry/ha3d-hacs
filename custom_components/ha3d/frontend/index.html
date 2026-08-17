@@ -4824,11 +4824,11 @@ function updateDebugCampos() {
   const el = document.getElementById('debug-campos');
   if (!el) return;
   const r2 = v => Math.round(v * 100) / 100;
-  const p = camera.position, t = controls.target;
+  const p = camera.position, target = controls.target;
   el.innerHTML =
     `<span class="lbl">${t('cam.current')}</span><br>` +
     `pos = (${r2(p.x)}, ${r2(p.y)}, ${r2(p.z)})<br>` +
-    `target = (${r2(t.x)}, ${r2(t.y)}, ${r2(t.z)})<br>` +
+    `target = (${r2(target.x)}, ${r2(target.y)}, ${r2(target.z)})<br>` +
     `<span class="lbl">${t('cam.saved')}</span> pos = (${defaultCamera.pos.map(r2).join(', ')}) · target = (${defaultCamera.target.map(r2).join(', ')})`;
 }
 
