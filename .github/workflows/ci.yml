@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Tests de l'intégration
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Vérification syntaxe Python
+        run: python3 -m py_compile custom_components/ha3d/*.py custom_components/ha3d/*/*.py tools/*.py
+
+      - name: Vérification syntaxe JS du frontend
+        run: |
+          python3 - <<'EOF'
+          import re
+          html = open("custom_components/ha3d/frontend/index.html", encoding="utf-8").read()
+          scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
+          open("/tmp/app.js", "w", encoding="utf-8").write("\n".join(scripts))
+          EOF
+          node --check /tmp/app.js
+          node --check custom_components/ha3d/frontend/panel.js
+
+      - name: Cohérence i18n (clés FR/EN)
+        run: |
+          node - <<'EOF'
+          const fs = require('fs');
+          const vm = require('vm');
+          let src = fs.readFileSync('/tmp/app.js', 'utf-8');
+          const start = src.indexOf('const I18N');
+          const end = src.indexOf('// Sélecteur de langue dans le HUD');
+          Object.defineProperty(global, 'localStorage', { value: { getItem: () => null, setItem: () => {} }, configurable: true });
+          Object.defineProperty(global, 'navigator', { value: { language: 'en-US' }, configurable: true });
+          global.document = { querySelectorAll: () => [] };
+          vm.runInThisContext(src.slice(start, end));
+          const keys = Object.keys(I18N.fr);
+          const langs = Object.keys(I18N);
+          let missing = [];
+          for (const l of langs) {
+            const miss = keys.filter(k => !I18N[l][k]);
+            if (miss.length) missing.push(`${l}: ${miss.join(',')}`);
+          }
+          if (missing.length) { console.error('i18n incohérent:', missing); process.exit(1); }
+          console.log(`i18n OK: ${langs.length} langues, ${keys.length} clés`);
+          EOF
+
+      - name: Chemins API du frontend adaptés à l'intégration
+        run: |
+          grep -q "/api/ha3d/layout" custom_components/ha3d/frontend/index.html \
+            && ! grep -qE "fetch\('/api/(layout|status|models|toggle|history)|new EventSource\('/api/events" custom_components/ha3d/frontend/index.html \
+            && echo "chemins /api/ha3d/* OK"
+          grep -q "gltfLoader.load('/ha3d/models/" custom_components/ha3d/frontend/index.html && echo "modèles /ha3d/models/* OK"
+
+      - name: Vérification manifest + hacs.json
+        run: |
+          python3 - <<'EOF'
+          import json
+          m = json.load(open("custom_components/ha3d/manifest.json"))
+          assert m["domain"] == "ha3d" and m["config_flow"], "manifest invalide"
+          h = json.load(open("hacs.json"))
+          print(f"manifest OK (v{m['version']}) + hacs.json OK")
+          EOF

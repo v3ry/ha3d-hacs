@@ -1,0 +1,6 @@
+{
+  "name": "Ha3D — 3D Home Visualizer",
+  "render_readme": true,
+  "homeassistant": "2024.1.0",
+  "persistent_directory": "layout"
+}
