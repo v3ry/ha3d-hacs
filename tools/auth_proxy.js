@@ -57,6 +57,9 @@ function setTrackedEntities(ids) {
 
 // Handler des événements state_changed relayés par le panel (remplace SSE).
 function handleRelayedState(msg) {
+  // Course au démarrage : tant que le layout n'est pas chargé, on ignore les
+  // événements relayés (le snapshot initial les couvrira).
+  if (!layout || !sensors) return;
   if (!msg.entity || !_trackedEntities.has(msg.entity)) {
     // Les portes animées ont leur propre entité, suivie séparément
     if (!(msg.entity && doorAnims.some(a => a.entity === msg.entity)) &&

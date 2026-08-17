@@ -14,5 +14,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/v3ry/ha3d-hacs/issues",
   "requirements": [],
-  "version": "0.1.9"
+  "version": "0.2.0"
 }
