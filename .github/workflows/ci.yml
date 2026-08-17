@@ -19,7 +19,9 @@ jobs:
         run: python3 -m unittest discover -s tests -v
 
       - name: Vérification syntaxe Python
-        run: python3 -m py_compile custom_components/ha3d/*.py custom_components/ha3d/*/*.py tools/*.py
+        run: |
+          python3 -m py_compile custom_components/ha3d/*.py tools/*.py
+          echo "py_compile OK (pas de sous-dossiers .py)"
 
       - name: Vérification syntaxe JS du frontend
         run: |
