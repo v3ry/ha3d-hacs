@@ -22,7 +22,14 @@ REPLACEMENTS = [
     ("new EventSource('/api/events')", "new EventSource('/api/ha3d/events')"),
 ]
 
-# Vérifications post-sync : aucun chemin /api/ non-adapté ne doit subsister
+# Remplacements CDN → fichiers locaux (le CSP de HA bloque les scripts externes)
+CDN_REPLACEMENTS = [
+    ("https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js", "vendor/three.min.js"),
+    ("https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js", "vendor/OrbitControls.js"),
+    ("https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js", "vendor/GLTFLoader.js"),
+]
+
+# Vérifications post-sync : aucun chemin standalone ne doit subsister
 GUARDS = [
     "fetch('/api/layout'",
     "fetch('/api/status'",
@@ -53,6 +60,13 @@ def sync(src: Path, dst: Path, check: bool = False) -> list[str]:
     for g in GUARDS:
         if g in html:
             missing.append(f"GARDE: {g}")
+
+    # CDN → local (CSP HA)
+    for cdn, local in CDN_REPLACEMENTS:
+        if cdn in html:
+            html = html.replace(cdn, local)
+        else:
+            missing.append(f"CDN absent (déjà local ?): {cdn[:50]}")
 
     target = dst / "index.html"
     if check:

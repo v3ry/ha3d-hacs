@@ -64,6 +64,17 @@ jobs:
             && echo "chemins /api/ha3d/* OK"
           grep -q "gltfLoader.load('/ha3d/models/" custom_components/ha3d/frontend/index.html && echo "modèles /ha3d/models/* OK"
 
+      - name: Pas de CDN externe (CSP Home Assistant)
+        run: |
+          if grep -q "cdn.jsdelivr.net\|unpkg.com" custom_components/ha3d/frontend/index.html; then
+            echo "::error::script externe détecté — le CSP de HA le bloquerait"
+            exit 1
+          fi
+          test -f custom_components/ha3d/frontend/vendor/three.min.js \
+            && test -f custom_components/ha3d/frontend/vendor/OrbitControls.js \
+            && test -f custom_components/ha3d/frontend/vendor/GLTFLoader.js \
+            && echo "three.js local OK (vendor/)"
+
       - name: Vérification manifest + hacs.json
         run: |
           python3 - <<'EOF'
