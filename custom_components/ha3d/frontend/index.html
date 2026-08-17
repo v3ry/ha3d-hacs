@@ -3285,6 +3285,14 @@ function toggleDebug(btn) {
   btn.classList.toggle('active', debugMode);
   document.getElementById('debug-panel').classList.toggle('hidden', !debugMode);
   document.body.classList.toggle('debug-mode', debugMode);
+  // L'ouverture du panneau ne doit jamais figer la caméra.
+  if (debugMode) {
+    controls.enabled = true;
+    debugDrag = null;
+    debugRoomEdit = null;
+    editDrag = null;
+    renderer.domElement.classList.remove('dragging');
+  }
   if (!debugMode) {
     debugDrag = null;
     controls.enabled = true;
