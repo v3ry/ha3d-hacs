@@ -30,6 +30,9 @@ class Ha3dPanel extends HTMLElement {
   }
 
   _sendToken() {
+    // Relit le token à chaque envoi (il peut arriver après le premier set hass)
+    const tok = this._hass && this._hass.auth ? this._hass.auth.accessToken : null;
+    if (tok) this._token = tok;
     if (!this._token) return;
     if (this._iframe && this._iframe.contentWindow) {
       this._iframe.contentWindow.postMessage(
