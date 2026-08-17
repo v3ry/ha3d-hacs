@@ -92,7 +92,19 @@ class Ha3dPanel extends HTMLElement {
     // Le custom element doit remplir toute la hauteur du conteneur HA
     // (sinon l'iframe fait 100% de rien → canvas three.js ~0 px de haut).
     const style = document.createElement('style');
-    style.textContent = ':host { display: block; height: 100%; width: 100%; position: relative; }';
+    // Selon la version de HA, un parent intermédiaire ne fournit pas de
+    // hauteur exploitable. Une hauteur viewport explicite évite un iframe 0px.
+    style.textContent = `
+      :host {
+        display: block;
+        position: relative;
+        width: 100%;
+        height: calc(100vh - var(--header-height, 56px));
+        min-height: 480px;
+        overflow: hidden;
+        box-sizing: border-box;
+      }
+    `;
     this.shadowRoot.appendChild(style);
 
     const iframe = document.createElement('iframe');
