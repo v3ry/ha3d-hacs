@@ -1,0 +1,12 @@
+{
+  "domain": "ha3d",
+  "name": "Ha3D — 3D Home Visualizer",
+  "codeowners": ["@v3ry"],
+  "config_flow": true,
+  "dependencies": ["frontend", "http"],
+  "documentation": "https://github.com/v3ry/ha3d-hacs",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/v3ry/ha3d-hacs/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
