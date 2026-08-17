@@ -341,11 +341,15 @@ class EventsView(HomeAssistantView):
         return response
 
 
-def register_views(hass: HomeAssistant, models_dir: Path) -> None:
-    """Enregistre toutes les vues API sur le webserver HA."""
+def register_views(hass: HomeAssistant, models_dir: Path, store) -> None:
+    """Enregistre toutes les vues API sur le webserver HA.
+
+    Le store et models_dir sont attachés à l'app aiohttp (request.app[DOMAIN])
+    — c'est là que les vues les lisent.
+    """
     app = hass.http.app
     app[DOMAIN] = {
-        "store": None,  # défini au setup
+        "store": store,
         "models_dir": models_dir,
     }
     hass.http.register_view(LayoutView())

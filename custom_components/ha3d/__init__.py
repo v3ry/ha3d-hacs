@@ -47,10 +47,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         models_dir.mkdir(parents=True, exist_ok=True)
 
     # Enregistre les vues /api/ha3d/* (auth native HA)
-    register_views(hass, models_dir)
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN]["store"] = store
-    hass.data[DOMAIN]["models_dir"] = models_dir
+    register_views(hass, models_dir, store)
 
     # Servir le frontend (index.html + modèles) depuis /ha3d/
     frontend_dir = Path(__file__).resolve().parent / "frontend"
