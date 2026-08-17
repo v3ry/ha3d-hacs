@@ -1,4 +1,4 @@
-"""Config flow de l'intégration Ha3D — aucune configuration requise."""
+"""Config flow de l'intégration Ha3D — nom de la maison (optionnel)."""
 from __future__ import annotations
 
 import logging
@@ -7,17 +7,11 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 
-from .const import DOMAIN, DOMAIN_TITLE
+from .const import CONF_ENTRY_TITLE, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
-
-SCHEMA = vol.Schema({})
-
-
-async def validate_input(hass: HomeAssistant) -> None:
-    """Vérifie que l'intégration est prête (rien à valider)."""
-    return None
 
 
 class Ha3dConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -28,5 +22,17 @@ class Ha3dConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input=None):
         errors = {}
         if user_input is not None:
-            return self.async_create_entry(title=DOMAIN_TITLE, data={})
-        return self.async_show_form(step_id="user", data_schema=SCHEMA, errors=errors)
+            # Le nom de la maison est stocké dans l'entrée ; le layout initial
+            # (démo) est créé au setup avec ce nom.
+            title = user_input.get("name") or CONF_ENTRY_TITLE
+            return self.async_create_entry(title=title, data=user_input)
+        schema = vol.Schema({
+            vol.Optional("name", default=""): cv.string,
+        })
+        return self.async_show_form(
+            step_id="user",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={"hint": ""},
+            last_step=False,
+        )

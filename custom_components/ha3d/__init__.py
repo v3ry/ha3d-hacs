@@ -27,7 +27,10 @@ CONFIG_SCHEMA = vol.Schema(
     extra=vol.ALLOW_EXTRA,
 )
 
-# Panel iframe dans la sidebar HA
+# Panel custom dans la sidebar HA
+PANEL_NAME = "ha3d-panel"
+PANEL_TITLE = "Ha3D"
+PANEL_ICON = "mdi:home-3d"
 PANEL_URL = "/ha3d/index.html"
 
 
@@ -37,17 +40,35 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Configure l'intégration : layout store, vues API, panneau sidebar."""
+    """Configure l'intégration : layout store, vues API, panneau sidebar.
+
+    Idempotent : si une entrée existe déjà, on ne ré-enregistre ni les vues
+    ni le panel (évite « Overwriting panel » quand plusieurs entrées sont
+    créées — ex: après un échec de setup, HA relance async_setup_entry).
+    """
+    if hass.data.get(DOMAIN):
+        _LOGGER.info("Ha3D déjà configuré — entrée ignorée")
+        return True
+
     config_dir = Path(hass.config.path(CONFIG_DIR))
     store = LayoutStore(config_dir / LAYOUT_FILE)
+
+    # Applique le nom saisi dans le config flow au layout de démo
+    if store.is_demo and entry.data.get("name"):
+        store.layout["house_name"] = entry.data["name"]
 
     models_dir = Path(__file__).resolve().parent / "frontend" / "models"
     if not models_dir.exists():
         _LOGGER.warning("dossier modèles introuvable: %s", models_dir)
         models_dir.mkdir(parents=True, exist_ok=True)
 
+    # Données partagées (lues par les vues) — avant l'enregistrement des vues
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN]["store"] = store
+    hass.data[DOMAIN]["models_dir"] = models_dir
+
     # Enregistre les vues /api/ha3d/* (auth native HA)
-    register_views(hass, models_dir, store)
+    register_views(hass)
 
     # Servir le frontend (index.html + modèles) depuis /ha3d/
     frontend_dir = Path(__file__).resolve().parent / "frontend"
@@ -60,11 +81,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from homeassistant.components.panel_custom import async_register_panel
     await async_register_panel(
         hass,
-        webcomponent_name="ha3d-panel",
-        frontend_url_path="ha3d-panel",
+        webcomponent_name=PANEL_NAME,
+        frontend_url_path=PANEL_NAME,
         module_url="/ha3d/panel.js",
-        sidebar_title="Ha3D",
-        sidebar_icon="mdi:home-3d",
+        sidebar_title=PANEL_TITLE,
+        sidebar_icon=PANEL_ICON,
         require_admin=False,
     )
 
@@ -77,5 +98,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Décharge l'intégration."""
+    """Décharge l'intégration (supprime le panneau si plus d'entrée)."""
+    if hass.data.get(DOMAIN):
+        # Ne désenregistre pas le panel : les autres entrées (si multiples)
+        # et le frontend servent encore. Le nettoyage complet se fait au
+        # dernier unload via async_unload_platforms (aucune plateforme ici).
+        hass.data[DOMAIN].pop("store", None)
     return True

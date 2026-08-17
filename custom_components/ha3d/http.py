@@ -347,15 +347,12 @@ class EventsView(HomeAssistantView):
         return response
 
 
-def register_views(hass: HomeAssistant, models_dir: Path, store) -> None:
+def register_views(hass: HomeAssistant) -> None:
     """Enregistre toutes les vues API sur le webserver HA.
 
     Les vues lisent le store via request.app[KEY_HASS].data[DOMAIN]
     (mécanisme standard hass.data, stable quelle que soit la version HA).
     """
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN]["store"] = store
-    hass.data[DOMAIN]["models_dir"] = models_dir
     hass.http.register_view(LayoutView())
     hass.http.register_view(SaveLayoutView())
     hass.http.register_view(StatusView())
