@@ -51,16 +51,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Servir le frontend (index.html + modèles) depuis /ha3d/
     frontend_dir = Path(__file__).resolve().parent / "frontend"
-    hass.http.register_static_path("/ha3d", str(frontend_dir))
+    from homeassistant.components.http import StaticPathConfig
+    await hass.http.async_register_static_paths([
+        StaticPathConfig("/ha3d", str(frontend_dir), False)
+    ])
 
-    # Panel custom dans la sidebar : module ES6 → custom element <ha3d-panel>
-    from homeassistant.components.frontend import add_extra_module_url
-    add_extra_module_url(hass, "/ha3d/panel.js")
-    await hass.components.frontend.async_register_built_in_panel(
+    # Panel custom dans la sidebar : webcomponent ES6 → custom element <ha3d-panel>
+    await hass.components.panel_custom.async_register_panel(
         hass,
-        "ha3d-panel",
-        "Ha3D",
-        "mdi:home-3d",
+        webcomponent_name="ha3d-panel",
+        frontend_url_path="ha3d-panel",
+        module_url="/ha3d/panel.js",
+        sidebar_title="Ha3D",
+        sidebar_icon="mdi:home-3d",
         require_admin=False,
     )
 

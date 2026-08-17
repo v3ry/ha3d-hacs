@@ -17,3 +17,6 @@ class Ha3dPanel extends HTMLElement {
 }
 
 customElements.define('ha3d-panel', Ha3dPanel);
+
+// Export requis pour être chargé comme module ES6 par le loader de HA.
+export {};
